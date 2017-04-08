@@ -64,43 +64,6 @@ struct latency_tracker *tracker;
 
 void blk_cb(struct latency_tracker_event_ctx *ctx)
 {
-#if 0
-	struct latency_tracker_event *data =
-		(struct latency_tracker_event *) ptr;
-	struct blk_key_t *key = (struct blk_key_t *) data->tkey.key;
-	struct block_hist_tracker *block_hist_priv =
-		(struct block_hist_tracker *) data->priv;
-
-	/*
-	 * Don't log garbage collector and unique cleanups.
-	 */
-	if (data->cb_flag == LATENCY_TRACKER_CB_GC ||
-			data->cb_flag == LATENCY_TRACKER_CB_UNIQUE)
-		goto end;
-
-	/*
-	 * Rate limiter.
-	 */
-	if ((data->end_ts - block_hist_priv->last_alert_ts) <
-			block_hist_priv->ns_rate_limit)
-		goto end_ts;
-
-	printk("BLOCK\n");
-	trace_block_hist_latency(key->dev, key->sector,
-			data->end_ts - data->start_ts);
-	cnt++;
-
-	if (block_hist_priv->readers > 0) {
-		block_hist_priv->reason = BLOCK_TRACKER_WAKE_DATA;
-		wake_up_interruptible(&block_hist_priv->read_wait);
-		block_hist_priv->got_alert = true;
-	}
-
-end_ts:
-	block_hist_priv->last_alert_ts = data->end_ts;
-end:
-	return;
-#endif
 }
 
 static
@@ -169,6 +132,7 @@ LT_PROBE_DEFINE(block_rq_issue, struct request_queue *q,
 
 	/* Update the I/O scheduler stats */
 	rq_to_key(&key, rq, KEY_SCHED);
+
 	s = latency_tracker_get_event_by_key(tracker, &key, sizeof(key), NULL);
 	if (s) {
 		if (rq->cmd_flags % 2 == 0) {
@@ -198,6 +162,43 @@ LT_PROBE_DEFINE(block_rq_issue, struct request_queue *q,
 	} else if (ret) {
 		printk("latency_tracker block: error adding event\n");
 	}
+}
+
+LT_PROBE_DEFINE(block_rq_complete, struct request_queue *q,
+                struct request *rq, unsigned int nr_bytes)
+{
+        struct blk_key_t key;
+        struct latency_tracker_event *s;
+
+        if (!latency_tracker_get_tracking_on(tracker))
+                return;
+
+        if (rq->cmd_type == REQ_TYPE_BLOCK_PC)
+                return;
+
+        rq_to_key(&key, rq, KEY_BLOCK);
+
+        s = latency_tracker_get_event_by_key(tracker, &key, sizeof(key), NULL);
+        if (!s)
+                goto end;
+
+        if (rq->cmd_flags % 2 == 0) {
+                update_hist(s, IO_BLOCK_READ,
+                                lttng_this_cpu_ptr(&live_hist));
+                update_hist(s, IO_BLOCK_READ,
+                                lttng_this_cpu_ptr(&current_hist));
+        } else {
+                update_hist(s, IO_BLOCK_WRITE,
+                                lttng_this_cpu_ptr(&live_hist));
+                update_hist(s, IO_BLOCK_WRITE,
+                                lttng_this_cpu_ptr(&current_hist));
+        }
+
+        latency_tracker_unref_event(s);
+
+end:
+        latency_tracker_event_out(tracker, NULL, &key, sizeof(key), 0, 0);
+        return;
 }
 
 static
@@ -314,41 +315,6 @@ void update_hist(struct latency_tracker_event *s, enum io_type t,
 
 	h->nb_values++;
 	spin_unlock_irqrestore(&h->lock, flags);
-}
-
-LT_PROBE_DEFINE(block_rq_complete, struct request_queue *q,
-		struct request *rq, unsigned int nr_bytes)
-{
-	struct blk_key_t key;
-	struct latency_tracker_event *s;
-
-	if (!latency_tracker_get_tracking_on(tracker))
-		return;
-
-	if (rq->cmd_type == REQ_TYPE_BLOCK_PC)
-		return;
-
-	rq_to_key(&key, rq, KEY_BLOCK);
-
-	s = latency_tracker_get_event_by_key(tracker, &key, sizeof(key), NULL);
-	if (!s)
-		goto end;
-	if (rq->cmd_flags % 2 == 0) {
-		update_hist(s, IO_BLOCK_READ,
-				lttng_this_cpu_ptr(&live_hist));
-		update_hist(s, IO_BLOCK_READ,
-				lttng_this_cpu_ptr(&current_hist));
-	} else {
-		update_hist(s, IO_BLOCK_WRITE,
-				lttng_this_cpu_ptr(&live_hist));
-		update_hist(s, IO_BLOCK_WRITE,
-				lttng_this_cpu_ptr(&current_hist));
-	}
-	latency_tracker_unref_event(s);
-
-end:
-	latency_tracker_event_out(tracker, NULL, &key, sizeof(key), 0, 0);
-	return;
 }
 
 static
@@ -706,6 +672,7 @@ int __init block_hist_latency_tp_init(void)
 	tracker = latency_tracker_create("block_hist");
 	if (!tracker)
 		goto error;
+
 	latency_tracker_set_priv(tracker, block_hist_priv);
 	latency_tracker_set_callback(tracker, blk_cb);
 	latency_tracker_set_key_size(tracker, MAX_KEY_SIZE);

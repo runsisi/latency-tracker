@@ -164,6 +164,7 @@ void latency_tracker_handle_timeouts(struct latency_tracker *tracker, int flush)
 	for (;;) {
 		if (cds_wfcq_empty(&tracker->timeout_head, &tracker->timeout_tail))
 			break;
+
 		if (likely(!flush)) {
 			/* Check before dequeue. */
 			qnode = &tracker->timeout_head.node;
@@ -180,8 +181,10 @@ void latency_tracker_handle_timeouts(struct latency_tracker *tracker, int flush)
 				&tracker->timeout_tail);
 		if (!qnode)
 			break;
+
 		s = caa_container_of(qnode, struct latency_tracker_event,
 				u.timeout_node);
+
 		latency_tracker_timeout_cb(tracker, s, flush);
 	}
 }
@@ -214,6 +217,7 @@ static
 void latency_tracker_enable_timer(struct latency_tracker *tracker)
 {
 	del_timer(&tracker->timer);
+
 	if (tracker->timer_period == 0)
 		return;
 
@@ -225,12 +229,14 @@ void latency_tracker_enable_timer(struct latency_tracker *tracker)
 }
 
 static
-void latency_tracker_workqueue(struct work_struct *work)
+void latency_tracker_workfn(struct work_struct *work)
 {
 	struct latency_tracker *tracker;
 
 	tracker = container_of(work, struct latency_tracker, resize_w);
+
 	latency_tracker_handle_timeouts(tracker, 0);
+
 	if (tracker->need_to_resize) {
 		tracker->need_to_resize = 0;
 		printk("latency_tracker: starting the resize\n");
@@ -258,10 +264,12 @@ int latency_tracker_set_timer_period(struct latency_tracker *tracker,
 	/* FIXME: locking, cancel existing, etc */
 	if (!tracker->timer_period) {
 		tracker->resize_q = create_singlethread_workqueue("latency_tracker");
-		INIT_WORK(&tracker->resize_w, latency_tracker_workqueue);
+		INIT_WORK(&tracker->resize_w, latency_tracker_workfn);
 	}
+
 	tracker->timer_period = timer_period;
 	cds_wfcq_init(&tracker->timeout_head, &tracker->timeout_tail);
+
 	latency_tracker_enable_timer(tracker);
 
 	return 0;
@@ -463,8 +471,8 @@ struct latency_tracker *latency_tracker_create(const char *name)
 	tracker->hash_fct = jhash;
 	tracker->match_fct = memcmp;
 	tracker->key_size = sizeof(long);
-	tracker->free_list_nelems = LT_DEFAULT_STARTUP_ALLOC_EVENTS;
-	tracker->threshold = LT_DEFAULT_THRESHOLD;
+	tracker->free_list_nelems = LT_DEFAULT_STARTUP_ALLOC_EVENTS; // 100
+	tracker->threshold = LT_DEFAULT_THRESHOLD; // 1000000, i.e., 1ms
 	tracker->tracking_on = 0;
 	if (!name)
 		goto error_free;
