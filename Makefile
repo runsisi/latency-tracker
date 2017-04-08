@@ -16,6 +16,10 @@ latency_tracker-objs += $(shell \
 
 obj-m := latency_tracker.o
 
+latency_tracker_kmod_ceph_hist-objs := trackers/kmod_ceph_hist.o \
+	wrapper/trace-clock.o
+obj-m += latency_tracker_kmod_ceph_hist.o
+
 latency_tracker_wakeup-objs := trackers/wakeup_latency.o trackers/wakeup_proc.o
 obj-m += latency_tracker_wakeup.o
 
